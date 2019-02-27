@@ -48,7 +48,7 @@ my_site = ('https://www.cms.gov/Regulations-and-Guidance/Guidance/Transmittals'
 my_start_text = 'Code Structure'
 my_end_text = 'FL 15'
 
-def pdf_table_to_df(pdf_site, start_text, end_text):
+def pdf_table_to_df(pdf_site, start_text, end_text, start_page, end_page):
     """
     Given a PDF web link with an embedded text table lacking any gridlines,
     extract the table as a pandas DataFrame. Consider using the tabula module
@@ -57,6 +57,8 @@ def pdf_table_to_df(pdf_site, start_text, end_text):
     pdf_site := website link ending in .pdf
     start_text := unambiguous text that marks the start of the embedded table
     end_text := unambiguous text that marks the end of the embedded table
+    start_page := first PDF page to be read in (index-base 0)
+    end_page := last PDF page to be read in (index-base 0)
     """
     with requests.Session() as my_session:
 
@@ -66,8 +68,8 @@ def pdf_table_to_df(pdf_site, start_text, end_text):
 
         # Parse the web PDF data into page-level strings
         init_content = [
-            source.getPage(10).extractText()    # getPage() uses base-0 indexing
-            , source.getPage(11).extractText()
+            source.getPage(start_page).extractText()
+            , source.getPage(end_page).extractText()
             ]    # extract text a list of lines
 
         # Clean up the source text
@@ -134,7 +136,7 @@ def pdf_table_to_df(pdf_site, start_text, end_text):
     outdf.sort_values(by='Type of Admission Code', inplace=True)
     return outdf
 
-outdf = pdf_table_to_df(my_site, my_start_text, my_end_text)
+outdf = pdf_table_to_df(my_site, my_start_text, my_end_text, 10, 11)
 outdf.to_excel(out_file, sheet_name=format, engine='xlsxwriter')
 outdf.columns = (["start", "label"])
 outdf.insert(loc=2, column='fmtname', value=format)
