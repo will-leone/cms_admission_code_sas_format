@@ -1,0 +1,150 @@
+"""
+Create SAS Format for Type of Admission (FL14) Codes
+
+Last Updated: February 27, 2019
+
+Purpose:
+  - Retrieve the 2004 CMS crosswalk for FL14 Type of Admission codes.
+  - Clean and export this data to SAS format tables on the SAS server.
+  - Create an Excel copy of the crosswalk to accompany these datasets.
+
+ Prerequisites:
+  - In addition to installing Python/Anaconda on your computer,
+    you will also need to install the tabula and saspy modules using the
+    'conda install requests', 'pip install PyPDF2', and 'conda install saspy'
+    commands in Anaconda Prompt.
+  - You will also need to configure saspy
+
+Instructions: Copy-paste the following into Anaconda Prompt.
+
+    python
+    from os import chdir
+    chdir("//grid/sasprod/dw/formats/source/code")
+    import create_admitcd
+
+"""
+
+import saspy
+import pandas as pd
+import requests
+from io import BytesIO
+from PyPDF2 import PdfFileReader
+import re
+import time
+
+# OUTPUT DATA PARAMETERS
+format = 'admitcd'
+sas = saspy.SASsession(cfgname='pdw_config')
+sas_code = sas.submit("""
+    LIBNAME fmt "/sasprod/dw/formats/source/staging";
+    """)
+grid = ("//grid/sasprod/dw/formats/source")
+out_file = (f"//grid/sasprod/dw/formats/source/references/"
+            f"cms_{format}.xlsx")
+
+# Pull CMS.GOV PDF data into an in-memory Pandas DataFrame
+my_site = ('https://www.cms.gov/Regulations-and-Guidance/Guidance/Transmittals'
+            '/downloads/R1775CP.pdf')
+my_start_text = 'Code Structure'
+my_end_text = 'FL 15'
+
+def pdf_table_to_df(pdf_site, start_text, end_text):
+    """
+    Given a PDF web link with an embedded text table lacking any gridlines,
+    extract the table as a pandas DataFrame. Consider using the tabula module
+    instead if the embedded table does have gridlines.
+
+    pdf_site := website link ending in .pdf
+    start_text := unambiguous text that marks the start of the embedded table
+    end_text := unambiguous text that marks the end of the embedded table
+    """
+    with requests.Session() as my_session:
+
+        # Pull web PDF data
+        raw_source = BytesIO(my_session.get(pdf_site).content)
+        source = PdfFileReader(raw_source)    # PDF reader object
+
+        # Parse the web PDF data into page-level strings
+        init_content = [
+            source.getPage(10).extractText()    # getPage() uses base-0 indexing
+            , source.getPage(11).extractText()
+            ]    # extract text a list of lines
+
+        # Clean up the source text
+        init_content = (
+            init_content[0][init_content[0].find(start_text) + len(start_text):]
+            + init_content[1][:init_content[1].find(end_text)]
+            )
+        init_content = init_content.replace('\n', '').replace('  ', ' ').strip()
+        init_content = re.sub('[^a-zA-Z0-9_\-:/(). ]', '', init_content)
+
+        # Create a clean list of code records as strings
+        iter_content = init_content
+            # removes non-alphanumerics
+        content = list()
+        ignore_index = 0
+        while len(iter_content) > ignore_index:
+            # Account for cases where the code is given as a range (e.g., 6-8)
+            if (len(iter_content) > 4 and "-" in iter_content[:4]):
+                # Ignore the range of codes
+                hyphen_index = re.search("-", iter_content[:4]).start()
+                ignore_index = (
+                    re.search("\D", iter_content[hyphen_index + 1:]).start()
+                    + hyphen_index + 1
+                    )
+            else:    # Only ignore the first code
+                ignore_index = re.search("\D", iter_content).start()
+            try:
+                # Add code-description preceding the next code to content list
+                desc_end = (
+                    re.search("\d", iter_content[ignore_index:]).start()
+                    + ignore_index
+                    )
+                content.append(iter_content[:desc_end].strip())
+            except AttributeError:
+                # Stop adding text once there are no more code-descriptions
+                break
+            # Don't process the added code-description again in the next loop
+            iter_content = iter_content[desc_end:].strip()
+
+
+        # Structure the flattened line-level page data as a DataFrame
+        outdf = pd.DataFrame(columns=[
+                'Type of Admission Code'
+                , 'Type of Admission Description'
+            ])
+        for record in content:
+            if record[0].isdigit() and "-" in record[:4]:
+            # Ignore any extra lines
+                end_codelist = re.search("\D", record[4:]).start() + 4
+                hyphen_index = re.search("-", record[:4]).start()
+                start_code = int(record[:hyphen_index])
+                end_code = int(record[hyphen_index + 1: end_codelist])
+                codes = list(range(start_code, end_code + 1))
+                print(codes)
+                for code in codes:
+                    n_record = [str(code), record[end_codelist:]]
+                    outdf.loc[-1] = n_record    # insert the finished row
+                    outdf.index = outdf.index + 1    # shift the index
+            elif record[0].isdigit():
+                record = record.split(maxsplit=1)
+                outdf.loc[-1] = record    # insert the finished row
+                outdf.index = outdf.index + 1    # shift the index
+
+    outdf.sort_values(by='Type of Admission Code', inplace=True)
+    return outdf
+
+outdf = pdf_table_to_df(my_site, my_start_text, my_end_text)
+outdf.to_excel(out_file, sheet_name=format, engine='xlsxwriter')
+outdf.columns = (["start", "label"])
+outdf.insert(loc=2, column='fmtname', value=format)
+outdf.insert(loc=3, column='type', value='C')
+
+# Export the finalized DataFrames
+try:
+    sas_out = sas.df2sd(outdf, table=format, libref='fmt')
+finally:
+    while 'TABLE_EXISTS= 1' not in sas.saslog():
+        time.sleep(1)
+    print(sas.saslog())
+    sas.disconnect()
