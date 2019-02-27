@@ -1,2 +1,2 @@
 # cms_admission_code_sas_format
-Create a crosswalk of CMS admission codes/descriptions from an online PDF.
+Convert an online PDF of CMS crosswalk admission codes/descriptions into a DataFrame and export as both a SAS format dataset and an Excel reference file.
